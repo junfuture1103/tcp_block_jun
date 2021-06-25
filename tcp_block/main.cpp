@@ -2,10 +2,12 @@
 #include <stdio.h>
 #include <libnet.h>
 
-char* site;
+#define TRUE 1
+#define FALSE 0
 
 struct Param {
     char* dev_{nullptr};
+    char* site{nullptr};
 
     bool parse(int argc, char* argv[]) { //function in structure
         if (argc != 3) {
@@ -13,6 +15,7 @@ struct Param {
             return false;
         }
         dev_ = argv[1];
+        site = argv[2];
         return true;
     }
 
@@ -23,7 +26,7 @@ struct Param {
 };
 
 //find warning site
-void dump(const u_char* buf, int* check) {
+int warning(const u_char* buf, char* site) {
     int i;
     const u_char* packet = buf;
 
@@ -51,21 +54,22 @@ void dump(const u_char* buf, int* check) {
                 ptr = ptr + strlen("Host: ");
                 ptr = strtok(ptr, "\r\n"); //strtok도 마찬가지 없으면 \0 나올때까지 계속감 ~ 수동으로 찾기
                 printf("\nHOST_BY_JUN : %s\n", ptr);
+                printf("warning site : %s", site);
 
-                if(strcmp(ptr, site) == 0){
-                    *check = 1;
+                if(strncmp(ptr, site, strlen(site)) == 0){
                     printf("find it %s", ptr);
-                    return;
+                    return TRUE;
                 }
             }
         }
     }
-    *check = 0;
+    return FALSE;
 }
+
+
 
 int main(int argc, char* argv[]) {
     int index = 1;
-    int check = 0; // is it warning?
 
     Param param;
     if (!param.parse(argc, argv))
@@ -107,15 +111,13 @@ int main(int argc, char* argv[]) {
         printf("[%d] %u bytes captured\n",index, header->caplen);
 
         //is it warning?? check == 1 -> True check == 0 -> False
-        dump(packet + sizeof(libnet_ethernet_hdr), &check);
-
-        index++;
-        printf("\n");
-
-        if(check){
+        if(warning(packet + sizeof(libnet_ethernet_hdr), param.site)){
             //send block packet
         }
 
+        index++;
+        printf("\n");
     }
+
     pcap_close(pcap);
 }
