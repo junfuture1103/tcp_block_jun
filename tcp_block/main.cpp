@@ -1,9 +1,18 @@
 #include <pcap.h>
 #include <stdio.h>
 #include <libnet.h>
+#include "ethhdr.h"
+#include "arphdr.h"
 
 #define TRUE 1
 #define FALSE 0
+
+#pragma pack(push, 1)
+struct EthArpPacket final {
+    EthHdr eth_;
+    ArpHdr arp_;
+};
+#pragma pack(pop)
 
 struct Param {
     char* dev_{nullptr};
@@ -24,6 +33,71 @@ struct Param {
         printf("sample: tcp-block wlan0 test.gilgil.net\n");
     }
 };
+
+//my IP/MAC address
+int GetInterfaceMacAddress(const char *ifname, Mac *mac_addr, Ip* ip_addr){
+    struct ifreq ifr;
+    int sockfd, ret;
+
+    printf("Get interface(%s) MAC address\n", ifname);
+
+    sockfd = socket(AF_INET, SOCK_DGRAM, 0);
+    if(sockfd < 0){
+        printf("Fail to get\n");
+        return -1;
+    }
+
+    strncpy(ifr.ifr_name, ifname, IFNAMSIZ);
+    ret = ioctl(sockfd, SIOCGIFHWADDR, &ifr);
+    if (ret < 0){
+        printf("Fail to get\n");
+        close(sockfd);
+        return -1;
+    }
+    memcpy((void*)mac_addr, ifr.ifr_hwaddr.sa_data, Mac::SIZE);
+
+    ret = ioctl(sockfd, SIOCGIFADDR, &ifr);
+    if (ret < 0){
+        printf("Fail to get\n");
+        close(sockfd);
+        return -1;
+    }
+    char ipstr[40];
+    //memcpy((void*)ip_addr, ifr.ifr_addr.sa_data, Ip::SIZE);
+    inet_ntop(AF_INET, ifr.ifr_addr.sa_data+2, ipstr, sizeof(struct sockaddr));
+    *ip_addr = Ip(ipstr);
+
+    printf("sucess get interface(%s) MAC/IP",ifname);
+    close(sockfd);
+    return 0;
+}
+
+void forward_rst(Mac MAC_ADD, Ip IP_ADD, const u_char* buf){
+    EthArpPacket packet;
+
+    libnet_ethernet_hdr *eth_hdr = (libnet_ethernet_hdr*)buf;
+    libnet_ipv4_hdr *ip_hdr_v4 = (libnet_ipv4_hdr*)(buf + sizeof(libnet_ethernet_hdr));
+    libnet_tcp_hdr *tcp_hdr = (libnet_tcp_hdr*)(buf + sizeof(libnet_ethernet_hdr) + (ip_hdr_v4->ip_hl*4));
+
+    //set ether header
+    //d_mac is org-packet
+    packet.eth_.smac_ = Mac(MAC_ADD);
+    packet.eth_.type_ = htons(eth_hdr->ether_type);
+
+    //set ip header
+    ip_hdr_v4->ip_len = sizeof(libnet_ipv4_hdr) + sizeof(libnet_ethernet_hdr);
+    //s_ip, d_ip is org-packet
+    //ttl is org-packet
+
+    //set tcp header
+    //sport, dport is org-packet
+    //tcp_hdr->th_seq = tcp_hdr->th_seq + tcp_hdr->tcp data size;
+    //ack is org-packet
+    //hlen
+    //flag
+
+    printf("Sending ArpRequest to get Source MAC..\n");
+}
 
 //find warning site
 int warning(const u_char* buf, char* site) {
@@ -66,10 +140,12 @@ int warning(const u_char* buf, char* site) {
     return FALSE;
 }
 
-
-
 int main(int argc, char* argv[]) {
     int index = 1;
+
+    //My interface
+    Mac MAC_ADD;
+    Ip IP_ADD;
 
     Param param;
     if (!param.parse(argc, argv))
@@ -112,7 +188,13 @@ int main(int argc, char* argv[]) {
 
         //is it warning?? check == 1 -> True check == 0 -> False
         if(warning(packet + sizeof(libnet_ethernet_hdr), param.site)){
+            //GetInterface
+            if(!GetInterfaceMacAddress(param.dev_, &MAC_ADD, &IP_ADD)){
+                printf("have problem in GetMAC..\n");
+            }
+
             //send block packet
+            forward_rst(MAC_ADD,IP_ADD, packet);
         }
 
         index++;

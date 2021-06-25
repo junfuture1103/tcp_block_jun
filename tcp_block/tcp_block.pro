@@ -5,4 +5,14 @@ CONFIG -= qt
 LIBS += -lpcap
 
 SOURCES += \
-        main.cpp
+        main.cpp \
+        arphdr.cpp \
+        ethhdr.cpp \
+        ip.cpp \
+        mac.cpp
+
+HEADERS += \
+        arphdr.h \
+        ethhdr.h \
+        ip.h \
+        mac.h
