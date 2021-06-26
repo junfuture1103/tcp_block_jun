@@ -13,6 +13,13 @@ struct EthArpPacket final {
     EthHdr eth_;
     ArpHdr arp_;
 };
+
+struct EthPacket{
+    EthHdr eth_;
+    libnet_ipv4_hdr ip_hdr_v4;
+    libnet_tcp_hdr tcp_hdr;
+};
+
 #pragma pack(pop)
 
 struct Param {
@@ -34,6 +41,17 @@ struct Param {
         printf("sample: tcp-block wlan0 test.gilgil.net\n");
     }
 };
+
+//for test
+void dump(unsigned char* buf, int size) {
+    int i;
+    for (i = 0; i < size; i++) {
+        if (i != 0 && i % 16 == 0)
+            printf("\n");
+        printf("%02X ", buf[i]);
+    }
+    printf("\n");
+}
 
 //my IP/MAC address
 int GetInterfaceMacAddress(const char *ifname, Mac *mac_addr, Ip* ip_addr){
@@ -73,7 +91,9 @@ int GetInterfaceMacAddress(const char *ifname, Mac *mac_addr, Ip* ip_addr){
     return 0;
 }
 
-void SendPacket(pcap_t* handle, EthHdr* packet, int packet_size){
+void SendPacket(pcap_t* handle, const u_char* packet, int packet_size){
+    printf("================== sending packet ==================\n");
+    dump((u_char*)packet, packet_size);
     int res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(packet), packet_size);
     if (res != 0) {
         fprintf(stderr, "pcap_sendpacket return %d error=%s\n", res, pcap_geterr(handle));
@@ -90,35 +110,38 @@ void forward_rst(Mac MAC_ADD, pcap_t* handle, const u_char* buf){
     int packet_size = sizeof(libnet_ethernet_hdr) + ntohs(ip_hdr_v4->ip_len);
     int tcp_data_size = ntohs(ip_hdr_v4->ip_len) - ip_hdr_v4->ip_hl*4 - tcp_hdr->th_off*4;
 
-    EthHdr* packet = (EthHdr*)malloc(packet_size);
-    libnet_ipv4_hdr *ip_hdr_v4_pk = (libnet_ipv4_hdr*)(packet + sizeof(libnet_ethernet_hdr));
-    libnet_tcp_hdr *tcp_hdr_pk = (libnet_tcp_hdr*)(packet + sizeof(libnet_ethernet_hdr) + (ip_hdr_v4->ip_hl*4));
+    printf("================== origin packet ==================\n");
+    dump((u_char*)buf, packet_size);
 
+    EthPacket* packet = (EthPacket*)buf;
 
     //set ether header
-    packet->dmac_ = Mac(eth_hdr->ether_dhost);//d_mac is org-packet
+    packet->eth_.dmac_ = Mac(eth_hdr->ether_dhost);//d_mac is org-packet
     //packet->smac_ = Mac(MAC_ADD);
-    packet->smac_ = Mac("AA:BB:CC:DD:EE:FF");
-    packet->type_ = eth_hdr->ether_type;
+    packet->eth_.smac_ = Mac("AA:BB:CC:DD:EE:FF");
+    packet->eth_.type_ = eth_hdr->ether_type;
 
     //set ip header
-    ip_hdr_v4_pk->ip_len = sizeof(libnet_ipv4_hdr) + sizeof(libnet_ethernet_hdr); //Here is RST block
-    ip_hdr_v4_pk->ip_dst = ip_hdr_v4->ip_dst; //d_ip is org-packet
-    ip_hdr_v4_pk->ip_src = ip_hdr_v4->ip_src; //s_ip is org-packet
-    ip_hdr_v4_pk->ip_ttl = ip_hdr_v4->ip_ttl; //ttl is org-packet
-    ip_hdr_v4_pk->ip_sum = ip_hdr_v4->ip_sum;
+    packet->ip_hdr_v4.ip_len = ntohs(sizeof(libnet_ipv4_hdr) + sizeof(libnet_tcp_hdr)); //Here is RST block
+    packet->ip_hdr_v4.ip_dst = ip_hdr_v4->ip_dst; //d_ip is org-packet
+    packet->ip_hdr_v4.ip_src = ip_hdr_v4->ip_src; //s_ip is org-packet
+    packet->ip_hdr_v4.ip_ttl = ip_hdr_v4->ip_ttl; //ttl is org-packet
+    packet->ip_hdr_v4.ip_sum = ip_hdr_v4->ip_sum;
 
     //set tcp header
-    tcp_hdr_pk->th_dport = tcp_hdr->th_dport;//sport, dport is org-packet
-    tcp_hdr_pk->th_sport = tcp_hdr->th_sport;//sport, dport is org-packet
-    tcp_hdr_pk->th_seq = tcp_hdr->th_seq + tcp_data_size;
-    tcp_hdr_pk->th_ack = tcp_hdr->th_ack;
-    tcp_hdr_pk->th_off = tcp_hdr->th_off;
-    tcp_hdr_pk->th_flags = TH_RST | TH_ACK; //Fin : tcp_hdr_pk->th_flags = TH_FIN | TH_ACK | TH_PSH;
-    tcp_hdr_pk->th_sum = tcp_hdr->th_sum;
+    packet->tcp_hdr.th_dport = tcp_hdr->th_dport;//sport, dport is org-packet
+    packet->tcp_hdr.th_sport = tcp_hdr->th_sport;//sport, dport is org-packet
+    packet->tcp_hdr.th_seq = tcp_hdr->th_seq + tcp_data_size;
+    packet->tcp_hdr.th_ack = tcp_hdr->th_ack;
+    packet->tcp_hdr.th_off = tcp_hdr->th_off;
+    packet->tcp_hdr.th_flags = TH_RST | TH_ACK; //Fin : tcp_hdr_pk->th_flags = TH_FIN | TH_ACK | TH_PSH;
+    packet->tcp_hdr.th_sum = tcp_hdr->th_sum;
 
-    SendPacket(handle, packet, packet_size);
-    free(packet);
+    printf("================== made packet ==================\n");
+    dump((u_char*)packet, packet_size);
+
+    SendPacket(handle, (const u_char*)packet, packet_size);
+
 }
 
 //find warning site
