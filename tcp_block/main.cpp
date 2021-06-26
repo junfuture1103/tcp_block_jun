@@ -20,7 +20,16 @@ struct EthPacket{
     libnet_tcp_hdr tcp_hdr;
 };
 
+struct Pseudoheader{
+    uint32_t srcIP;
+    uint32_t destIP;
+    uint8_t reserved=0;
+    uint8_t protocol;
+    uint16_t TCPLen;
+};
+
 #pragma pack(pop)
+#define CARRY 65536
 
 struct Param {
     char* dev_{nullptr};
@@ -51,6 +60,87 @@ void dump(unsigned char* buf, int size) {
         printf("%02X ", buf[i]);
     }
     printf("\n");
+}
+
+uint16_t calculate(uint16_t* data, int dataLen)
+{
+    uint16_t result;
+    int tempChecksum=0;
+    int length;
+    bool flag=false;
+    if((dataLen%2)==0)
+        length=dataLen/2;
+    else
+    {
+        length=(dataLen/2)+1;
+        flag=true;
+    }
+
+    for (int i = 0; i < length; ++i) // cal 2byte unit
+    {
+
+
+        if(i==length-1&&flag) //last num is odd num
+            tempChecksum+=ntohs(data[i]&0x00ff);
+        else
+            tempChecksum+=ntohs(data[i]);
+
+        if(tempChecksum>CARRY)
+                tempChecksum=(tempChecksum-CARRY)+1;
+
+    }
+
+    result=tempChecksum;
+    return result;
+}
+
+uint16_t calIPChecksum(uint8_t* data)
+{
+    struct iphdr* iph=(struct iphdr*)data;
+    iph->check=0;//set Checksum field 0
+
+    uint16_t checksum=calculate((uint16_t*)iph,iph->ihl*4);
+    iph->check=htons(checksum^0xffff);//xor checksum
+
+    return iph->check;
+}
+
+uint16_t calTCPChecksum(uint8_t *data,int dataLen) //data는 ip헤더 시작위치, datalen은 ip헤더 부터 끝까지 길이
+{
+    //make Pseudo Header
+    struct Pseudoheader pseudoheader; //saved by network byte order
+
+    //init Pseudoheader
+    struct iphdr *iph=(struct iphdr*)data;
+    struct tcphdr *tcph=(struct tcphdr*)(data+iph->ihl*4);
+
+    //Pseudoheader initialize
+    memcpy(&pseudoheader.srcIP,&iph->saddr,sizeof(pseudoheader.srcIP));
+    memcpy(&pseudoheader.destIP,&iph->daddr,sizeof(pseudoheader.destIP));
+    pseudoheader.protocol=iph->protocol;
+    pseudoheader.TCPLen=htons(dataLen-(iph->ihl*4));
+
+    //Cal pseudoChecksum
+    uint16_t pseudoResult=calculate((uint16_t*)&pseudoheader,sizeof(pseudoheader));
+
+    //Cal TCP Segement Checksum
+    tcph->check=0; //set Checksum field 0
+    uint16_t tcpHeaderResult=calculate((uint16_t*)tcph,ntohs(pseudoheader.TCPLen));
+
+
+    uint16_t checksum;
+    int tempCheck;
+
+    if((tempCheck=pseudoResult+tcpHeaderResult)>CARRY)
+        checksum=(tempCheck-CARRY) +1;
+    else
+        checksum=tempCheck;
+
+
+    checksum=ntohs(checksum^0xffff); //xor checksum
+    tcph->check=checksum;
+
+    return checksum;
 }
 
 //my IP/MAC address
@@ -117,27 +207,27 @@ void forward_rst(Mac MAC_ADD, pcap_t* handle, const u_char* buf){
 
     //set ether header
     packet->eth_.dmac_ = Mac(eth_hdr->ether_dhost);//d_mac is org-packet
-    //packet->smac_ = Mac(MAC_ADD);
-    packet->eth_.smac_ = Mac("AA:BB:CC:DD:EE:FF");
+    packet->eth_.smac_ = Mac(MAC_ADD);
     packet->eth_.type_ = eth_hdr->ether_type;
 
     //set ip header
-    packet->ip_hdr_v4.ip_len = ntohs(sizeof(libnet_ipv4_hdr) + sizeof(libnet_tcp_hdr)); //Here is RST block
+    packet->ip_hdr_v4.ip_len = ntohs(sizeof(libnet_ipv4_hdr) + sizeof(libnet_tcp_hdr)); //Here is RST block total length
     packet->ip_hdr_v4.ip_dst = ip_hdr_v4->ip_dst; //d_ip is org-packet
     packet->ip_hdr_v4.ip_src = ip_hdr_v4->ip_src; //s_ip is org-packet
     packet->ip_hdr_v4.ip_ttl = ip_hdr_v4->ip_ttl; //ttl is org-packet
-    packet->ip_hdr_v4.ip_sum = ip_hdr_v4->ip_sum;
+    packet->ip_hdr_v4.ip_sum = calIPChecksum((u_int8_t*)ip_hdr_v4);
 
     //set tcp header
     packet->tcp_hdr.th_dport = tcp_hdr->th_dport;//sport, dport is org-packet
     packet->tcp_hdr.th_sport = tcp_hdr->th_sport;//sport, dport is org-packet
     packet->tcp_hdr.th_seq = tcp_hdr->th_seq + tcp_data_size;
     packet->tcp_hdr.th_ack = tcp_hdr->th_ack;
-    packet->tcp_hdr.th_off = tcp_hdr->th_off;
+    packet->tcp_hdr.th_off = sizeof(libnet_tcp_hdr)/4;
     packet->tcp_hdr.th_flags = TH_RST | TH_ACK; //Fin : tcp_hdr_pk->th_flags = TH_FIN | TH_ACK | TH_PSH;
-    packet->tcp_hdr.th_sum = tcp_hdr->th_sum;
+    packet->tcp_hdr.th_sum = calTCPChecksum((u_int8_t*)ip_hdr_v4, ntohs(ip_hdr_v4->ip_len));
 
     printf("================== made packet ==================\n");
+    packet_size = sizeof(libnet_ethernet_hdr) + sizeof(libnet_ipv4_hdr) + sizeof(libnet_tcp_hdr);
     dump((u_char*)packet, packet_size);
 
     SendPacket(handle, (const u_char*)packet, packet_size);
