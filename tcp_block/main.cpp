@@ -8,6 +8,7 @@
 #define FALSE 0
 
 #pragma pack(push, 1)
+
 struct EthArpPacket final {
     EthHdr eth_;
     ArpHdr arp_;
@@ -39,7 +40,7 @@ int GetInterfaceMacAddress(const char *ifname, Mac *mac_addr, Ip* ip_addr){
     struct ifreq ifr;
     int sockfd, ret;
 
-    printf("Get interface(%s) MAC address\n", ifname);
+    //printf("Get interface(%s) MAC address..\n", ifname);
 
     sockfd = socket(AF_INET, SOCK_DGRAM, 0);
     if(sockfd < 0){
@@ -67,36 +68,57 @@ int GetInterfaceMacAddress(const char *ifname, Mac *mac_addr, Ip* ip_addr){
     inet_ntop(AF_INET, ifr.ifr_addr.sa_data+2, ipstr, sizeof(struct sockaddr));
     *ip_addr = Ip(ipstr);
 
-    printf("sucess get interface(%s) MAC/IP",ifname);
+    printf("sucess get interface(%s) & MAC/IP\n", ifname);
     close(sockfd);
     return 0;
 }
 
-void forward_rst(Mac MAC_ADD, Ip IP_ADD, const u_char* buf){
-    EthArpPacket packet;
+void SendPacket(pcap_t* handle, EthHdr* packet, int packet_size){
+    int res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(packet), packet_size);
+    if (res != 0) {
+        fprintf(stderr, "pcap_sendpacket return %d error=%s\n", res, pcap_geterr(handle));
+    }else{
+        printf("Sending forward_rst block packet..\n");
+    }
+}
 
+void forward_rst(Mac MAC_ADD, pcap_t* handle, const u_char* buf){
     libnet_ethernet_hdr *eth_hdr = (libnet_ethernet_hdr*)buf;
     libnet_ipv4_hdr *ip_hdr_v4 = (libnet_ipv4_hdr*)(buf + sizeof(libnet_ethernet_hdr));
     libnet_tcp_hdr *tcp_hdr = (libnet_tcp_hdr*)(buf + sizeof(libnet_ethernet_hdr) + (ip_hdr_v4->ip_hl*4));
 
+    int packet_size = sizeof(libnet_ethernet_hdr) + ntohs(ip_hdr_v4->ip_len);
+    int tcp_data_size = ntohs(ip_hdr_v4->ip_len) - ip_hdr_v4->ip_hl*4 - tcp_hdr->th_off*4;
+
+    EthHdr* packet = (EthHdr*)malloc(packet_size);
+    libnet_ipv4_hdr *ip_hdr_v4_pk = (libnet_ipv4_hdr*)(packet + sizeof(libnet_ethernet_hdr));
+    libnet_tcp_hdr *tcp_hdr_pk = (libnet_tcp_hdr*)(packet + sizeof(libnet_ethernet_hdr) + (ip_hdr_v4->ip_hl*4));
+
+
     //set ether header
-    //d_mac is org-packet
-    packet.eth_.smac_ = Mac(MAC_ADD);
-    packet.eth_.type_ = htons(eth_hdr->ether_type);
+    packet->dmac_ = Mac(eth_hdr->ether_dhost);//d_mac is org-packet
+    //packet->smac_ = Mac(MAC_ADD);
+    packet->smac_ = Mac("AA:BB:CC:DD:EE:FF");
+    packet->type_ = eth_hdr->ether_type;
 
     //set ip header
-    ip_hdr_v4->ip_len = sizeof(libnet_ipv4_hdr) + sizeof(libnet_ethernet_hdr);
-    //s_ip, d_ip is org-packet
-    //ttl is org-packet
+    ip_hdr_v4_pk->ip_len = sizeof(libnet_ipv4_hdr) + sizeof(libnet_ethernet_hdr); //Here is RST block
+    ip_hdr_v4_pk->ip_dst = ip_hdr_v4->ip_dst; //d_ip is org-packet
+    ip_hdr_v4_pk->ip_src = ip_hdr_v4->ip_src; //s_ip is org-packet
+    ip_hdr_v4_pk->ip_ttl = ip_hdr_v4->ip_ttl; //ttl is org-packet
+    ip_hdr_v4_pk->ip_sum = ip_hdr_v4->ip_sum;
 
     //set tcp header
-    //sport, dport is org-packet
-    //tcp_hdr->th_seq = tcp_hdr->th_seq + tcp_hdr->tcp data size;
-    //ack is org-packet
-    //hlen
-    //flag
+    tcp_hdr_pk->th_dport = tcp_hdr->th_dport;//sport, dport is org-packet
+    tcp_hdr_pk->th_sport = tcp_hdr->th_sport;//sport, dport is org-packet
+    tcp_hdr_pk->th_seq = tcp_hdr->th_seq + tcp_data_size;
+    tcp_hdr_pk->th_ack = tcp_hdr->th_ack;
+    tcp_hdr_pk->th_off = tcp_hdr->th_off;
+    tcp_hdr_pk->th_flags = TH_RST | TH_ACK; //Fin : tcp_hdr_pk->th_flags = TH_FIN | TH_ACK | TH_PSH;
+    tcp_hdr_pk->th_sum = tcp_hdr->th_sum;
 
-    printf("Sending ArpRequest to get Source MAC..\n");
+    SendPacket(handle, packet, packet_size);
+    free(packet);
 }
 
 //find warning site
@@ -108,7 +130,7 @@ int warning(const u_char* buf, char* site) {
     libnet_tcp_hdr *tcp_hdr = (libnet_tcp_hdr *)(packet + (ip_hdr_v4->ip_hl*4));
     int data_size = ntohs(ip_hdr_v4->ip_len) - ip_hdr_v4->ip_hl*4 - tcp_hdr->th_off*4;
 
-    printf("[dump] data size : %d ip_hdr_v4 : %d \n", data_size, ip_hdr_v4->ip_hl*4);
+    printf("[is it warning?] data size : %d ip_hdr_v4 : %d \n", data_size, ip_hdr_v4->ip_hl*4);
 
     if(data_size != 0){
         packet = packet + tcp_hdr->th_off*4 + ip_hdr_v4->ip_hl*4;
@@ -128,10 +150,10 @@ int warning(const u_char* buf, char* site) {
                 ptr = ptr + strlen("Host: ");
                 ptr = strtok(ptr, "\r\n"); //strtok도 마찬가지 없으면 \0 나올때까지 계속감 ~ 수동으로 찾기
                 printf("\nHOST_BY_JUN : %s\n", ptr);
-                printf("warning site : %s", site);
+                printf("warning site : %s\n", site);
 
                 if(strncmp(ptr, site, strlen(site)) == 0){
-                    printf("find it %s", ptr);
+                    printf("find it %s\n", ptr);
                     return TRUE;
                 }
             }
@@ -189,12 +211,12 @@ int main(int argc, char* argv[]) {
         //is it warning?? check == 1 -> True check == 0 -> False
         if(warning(packet + sizeof(libnet_ethernet_hdr), param.site)){
             //GetInterface
-            if(!GetInterfaceMacAddress(param.dev_, &MAC_ADD, &IP_ADD)){
+            if(GetInterfaceMacAddress(param.dev_, &MAC_ADD, &IP_ADD) != 0){
                 printf("have problem in GetMAC..\n");
             }
 
             //send block packet
-            forward_rst(MAC_ADD,IP_ADD, packet);
+            forward_rst(MAC_ADD, pcap, packet);
         }
 
         index++;
