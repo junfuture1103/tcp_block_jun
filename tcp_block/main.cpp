@@ -147,7 +147,7 @@ uint16_t calTCPChecksum(uint8_t *data,int dataLen) //data는 ip헤더 시작위�
     checksum=ntohs(checksum^0xffff); //xor checksum
     tcph->check=checksum;
 
-    return checksum;
+    return tcph->check;
 }
 
 //my IP/MAC address
@@ -190,7 +190,8 @@ int GetInterfaceMacAddress(const char *ifname, Mac *mac_addr, Ip* ip_addr){
 
 void SendPacket(pcap_t* handle, const u_char* packet, int packet_size){
     printf("================== sending packet ==================\n");
-    dump((u_char*)packet, packet_size);
+    //dump((u_char*)packet, packet_size);
+
     int res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(packet), packet_size);
     if (res != 0) {
         fprintf(stderr, "pcap_sendpacket return %d error=%s\n", res, pcap_geterr(handle));
@@ -208,7 +209,7 @@ void forward_rst(Mac MAC_ADD, pcap_t* handle, const u_char* buf){
     int tcp_data_size = ntohs(ip_hdr_v4->ip_len) - ip_hdr_v4->ip_hl*4 - tcp_hdr->th_off*4;
 
     printf("================== origin packet ==================\n");
-    dump((u_char*)buf, packet_size);
+    //dump((u_char*)buf, packet_size);
 
     EthPacket* packet = (EthPacket*)buf;
 
@@ -218,7 +219,7 @@ void forward_rst(Mac MAC_ADD, pcap_t* handle, const u_char* buf){
     packet->eth_.type_ = eth_hdr->ether_type;
 
     //set ip header
-    packet->ip_hdr_v4.ip_len = ntohs(sizeof(libnet_ipv4_hdr) + sizeof(libnet_tcp_hdr)); //Here is RST block total length
+    packet->ip_hdr_v4.ip_len = htons(sizeof(libnet_ipv4_hdr) + sizeof(libnet_tcp_hdr)); //Here is RST block total length
     packet->ip_hdr_v4.ip_dst = ip_hdr_v4->ip_dst; //d_ip is org-packet
     packet->ip_hdr_v4.ip_src = ip_hdr_v4->ip_src; //s_ip is org-packet
     packet->ip_hdr_v4.ip_ttl = ip_hdr_v4->ip_ttl; //ttl is org-packet
@@ -227,102 +228,15 @@ void forward_rst(Mac MAC_ADD, pcap_t* handle, const u_char* buf){
     //set tcp header
     packet->tcp_hdr.th_dport = tcp_hdr->th_dport;//sport, dport is org-packet
     packet->tcp_hdr.th_sport = tcp_hdr->th_sport;//sport, dport is org-packet
-    packet->tcp_hdr.th_seq = tcp_hdr->th_seq + tcp_data_size;
+    packet->tcp_hdr.th_seq = htonl(ntohl(tcp_hdr->th_seq) + tcp_data_size);
     packet->tcp_hdr.th_ack = tcp_hdr->th_ack;
     packet->tcp_hdr.th_off = sizeof(libnet_tcp_hdr)/4;
     packet->tcp_hdr.th_flags = TH_RST | TH_ACK; //Rst block. Fin : tcp_hdr_pk->th_flags = TH_FIN | TH_ACK | TH_PSH;
     packet->tcp_hdr.th_sum = calTCPChecksum((u_int8_t*)ip_hdr_v4, ntohs(packet->ip_hdr_v4.ip_len));
 
     printf("================== made packet ==================\n");
-    packet_size = sizeof(libnet_ethernet_hdr) + htons(packet->ip_hdr_v4.ip_len);
-    dump((u_char*)packet, packet_size);
-
-    SendPacket(handle, (const u_char*)packet, packet_size);
-}
-
-
-void backward_rst(Mac MAC_ADD, pcap_t* handle, const u_char* buf){
-    libnet_ethernet_hdr *eth_hdr = (libnet_ethernet_hdr*)buf;
-    libnet_ipv4_hdr *ip_hdr_v4 = (libnet_ipv4_hdr*)(buf + sizeof(libnet_ethernet_hdr));
-    libnet_tcp_hdr *tcp_hdr = (libnet_tcp_hdr*)(buf + sizeof(libnet_ethernet_hdr) + (ip_hdr_v4->ip_hl*4));
-
-    int packet_size = sizeof(libnet_ethernet_hdr) + ntohs(ip_hdr_v4->ip_len);
-    int tcp_data_size = ntohs(ip_hdr_v4->ip_len) - ip_hdr_v4->ip_hl*4 - tcp_hdr->th_off*4;
-
-    printf("================== origin packet ==================\n");
-    dump((u_char*)buf, packet_size);
-
-    EthPacket* packet = (EthPacket*)buf;
-
-    //set ether header
-    packet->eth_.dmac_ = Mac(eth_hdr->ether_shost);//d_mac is org-packet
-    packet->eth_.smac_ = Mac(MAC_ADD);
-    packet->eth_.type_ = eth_hdr->ether_type;
-
-    //set ip header
-    packet->ip_hdr_v4.ip_len = ntohs(sizeof(libnet_ipv4_hdr) + sizeof(libnet_tcp_hdr)); //Here is RST block total length
-    packet->ip_hdr_v4.ip_dst = ip_hdr_v4->ip_src; //d_ip is org-packet reverse
-    packet->ip_hdr_v4.ip_src = ip_hdr_v4->ip_dst; //s_ip is org-packet reverse
-    packet->ip_hdr_v4.ip_ttl = 128; //ttl is about 128
-    packet->ip_hdr_v4.ip_sum = calIPChecksum((u_int8_t*)ip_hdr_v4);
-
-    //set tcp header
-    packet->tcp_hdr.th_dport = tcp_hdr->th_sport;//sport, dport is org-packet
-    packet->tcp_hdr.th_sport = tcp_hdr->th_dport;//sport, dport is org-packet
-    packet->tcp_hdr.th_seq = tcp_hdr->th_ack;
-    packet->tcp_hdr.th_ack = tcp_hdr->th_seq + tcp_data_size;
-    packet->tcp_hdr.th_off = sizeof(libnet_tcp_hdr)/4;
-    packet->tcp_hdr.th_flags = TH_RST | TH_ACK; //Rst block. Fin : tcp_hdr_pk->th_flags = TH_FIN | TH_ACK | TH_PSH;
-    packet->tcp_hdr.th_sum = calTCPChecksum((u_int8_t*)ip_hdr_v4, ntohs(packet->ip_hdr_v4.ip_len));
-
-    printf("================== made packet ==================\n");
-    dump((u_char*)packet, packet_size);
-
-    SendPacket(handle, (const u_char*)packet, packet_size);
-}
-
-void forward_fin(Mac MAC_ADD, pcap_t* handle, const u_char* buf){
-    libnet_ethernet_hdr *eth_hdr = (libnet_ethernet_hdr*)buf;
-    libnet_ipv4_hdr *ip_hdr_v4 = (libnet_ipv4_hdr*)(buf + sizeof(libnet_ethernet_hdr));
-    libnet_tcp_hdr *tcp_hdr = (libnet_tcp_hdr*)(buf + sizeof(libnet_ethernet_hdr) + (ip_hdr_v4->ip_hl*4));
-
-    int packet_size = sizeof(libnet_ethernet_hdr) + ntohs(ip_hdr_v4->ip_len);
-
-    std::string message = "blocked";
-
-    printf("================== origin packet ==================\n");
-    dump((u_char*)buf, packet_size);
-
-    EthPacket* packet = (EthPacket*)buf;
-
-    //set ether header
-    packet->eth_.dmac_ = Mac(eth_hdr->ether_dhost);//d_mac is org-packet
-    packet->eth_.smac_ = Mac(MAC_ADD);
-    packet->eth_.type_ = eth_hdr->ether_type;
-
-    //set ip header
-    packet->ip_hdr_v4.ip_len = ntohs(sizeof(libnet_ipv4_hdr) + sizeof(libnet_tcp_hdr) + message.size()); //Here is RST block total length
-    packet->ip_hdr_v4.ip_dst = ip_hdr_v4->ip_dst; //d_ip is org-packet
-    packet->ip_hdr_v4.ip_src = ip_hdr_v4->ip_src; //s_ip is org-packet
-    packet->ip_hdr_v4.ip_ttl = ip_hdr_v4->ip_ttl; //ttl is org-packet
-    packet->ip_hdr_v4.ip_sum = calIPChecksum((u_int8_t*)ip_hdr_v4);
-
-    //set tcp header
-    packet->tcp_hdr.th_dport = tcp_hdr->th_dport;//sport, dport is org-packet
-    packet->tcp_hdr.th_sport = tcp_hdr->th_sport;//sport, dport is org-packet
-    packet->tcp_hdr.th_seq = tcp_hdr->th_seq + message.size();
-    packet->tcp_hdr.th_ack = tcp_hdr->th_ack;
-    packet->tcp_hdr.th_off = sizeof(libnet_tcp_hdr)/4;
-    packet->tcp_hdr.th_flags = TH_FIN | TH_ACK | TH_PUSH; //Fin block
-    packet->tcp_hdr.th_sum = calTCPChecksum((u_int8_t*)ip_hdr_v4, ntohs(packet->ip_hdr_v4.ip_len));
-
-    //set tcp data
-    memcpy(packet->data.msg, message.c_str(), message.size());
-    packet->data.msg_size = message.size();
-
-    printf("================== made packet ==================\n");
-    packet_size = sizeof(libnet_ethernet_hdr) + htons(packet->ip_hdr_v4.ip_len);
-    dump((u_char*)packet, packet_size);
+    packet_size = sizeof(libnet_ethernet_hdr) + ntohs(packet->ip_hdr_v4.ip_len);
+    //dump((u_char*)packet, packet_size);
 
     SendPacket(handle, (const u_char*)packet, packet_size);
 }
@@ -339,7 +253,7 @@ void backward_fin(Mac MAC_ADD, pcap_t* handle, const u_char* buf){
 
     EthPacket* packet = (EthPacket*)buf;
 
-    std::string message = "blocked";
+    std::string message = "blogdcked\r\n";
 
     //set ether header
     packet->eth_.dmac_ = Mac(eth_hdr->ether_shost);//d_mac is org-packet
@@ -358,11 +272,11 @@ void backward_fin(Mac MAC_ADD, pcap_t* handle, const u_char* buf){
     //set tcp header
     packet->tcp_hdr.th_dport = tcp_hdr->th_sport;//sport, dport is org-packet
     packet->tcp_hdr.th_sport = tcp_hdr->th_dport;//sport, dport is org-packet
+    packet->tcp_hdr.th_sum = calTCPChecksum((u_int8_t*)ip_hdr_v4, ntohs(packet->ip_hdr_v4.ip_len));
     packet->tcp_hdr.th_seq = tcp_hdr->th_ack;
-    packet->tcp_hdr.th_ack = tcp_hdr->th_seq + tcp_data_size;
+    packet->tcp_hdr.th_ack = htonl(ntohl(tcp_hdr->th_seq) + tcp_data_size);
     packet->tcp_hdr.th_off = sizeof(libnet_tcp_hdr)/4;
     packet->tcp_hdr.th_flags = TH_FIN | TH_ACK | TH_PUSH; //Fin block
-    packet->tcp_hdr.th_sum = calTCPChecksum((u_int8_t*)ip_hdr_v4, ntohs(packet->ip_hdr_v4.ip_len));
 
     //set tcp data
     memcpy(packet->data.msg, message.c_str(), message.size());
@@ -390,7 +304,7 @@ int warning(const u_char* buf, char* site) {
         packet = packet + tcp_hdr->th_off*4 + ip_hdr_v4->ip_hl*4;
 
         if (packet[0] == 'G'){ //POST? "GET "로 필터링하기
-            printf("\n==========http request===========\n");
+            printf("\n==========http request ===========\n");
             printf("\n");
             for (i = 0; i < data_size; i++) {
                 if (i != 0 && i % 16 == 0)
@@ -471,8 +385,8 @@ int main(int argc, char* argv[]) {
             //send block packet
             //forward_rst(MAC_ADD, pcap, packet);
             //backward_rst(MAC_ADD, pcap, packet);
-            forward_fin(MAC_ADD, pcap, packet);
-            //backward_fin(MAC_ADD, pcap, packet);
+            //forward_fin(MAC_ADD, pcap, packet);
+            backward_fin(MAC_ADD, pcap, packet);
 
         }
 
